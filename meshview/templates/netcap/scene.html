@@ -1,0 +1,900 @@
+{% extends "netcap/base.html" %}
+
+{% block nav_scene %}active{% endblock %}
+
+{% block extra_style %}
+<style>
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    padding: 13px 16px;
+    margin-bottom: 16px;
+  }
+
+  .toolbar label {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-right: 4px;
+  }
+
+  .toolbar .spacer { flex: 1; }
+
+  .toolbar-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding-left: 14px;
+    margin-left: 2px;
+    border-left: 1px solid var(--border-soft);
+  }
+
+  .live-status {
+    display: none;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text-dim);
+    transition: color 0.25s var(--ease);
+  }
+  .live-status.show { display: inline-flex; animation: rise-in 0.25s var(--ease) both; }
+  .live-status .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #9a9a9a;
+    position: relative;
+    transition: background 0.25s var(--ease);
+  }
+  .live-status[data-state="live"] { color: var(--text); }
+  .live-status[data-state="live"] .dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .live-status[data-state="live"] .dot::after {
+    content: "";
+    position: absolute;
+    inset: -5px;
+    border-radius: 50%;
+    background: var(--ok);
+    opacity: 0.5;
+    animation: dot-pulse 1.5s var(--ease) infinite;
+  }
+  .live-status[data-state="connecting"] .dot,
+  .live-status[data-state="reconnecting"] .dot {
+    background: var(--warn);
+    animation: blink 0.9s ease-in-out infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.3; }
+  }
+
+  .legend {
+    display: flex;
+    gap: 14px;
+    font-size: 12px;
+    color: var(--text-dim);
+    align-items: center;
+    padding: 6px 14px;
+    background: var(--panel-raised);
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+  }
+
+  .legend .swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 5px;
+    vertical-align: middle;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 16px;
+    align-items: start;
+  }
+
+  #scene-panel {
+    position: relative;
+    height: 70vh;
+    min-height: 460px;
+    overflow: hidden;
+  }
+
+  #scene-canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  #scene-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    text-align: center;
+    padding: 20px;
+  }
+
+  #hover-tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(15, 20, 24, 0.92);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 9px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text);
+    display: none;
+    white-space: nowrap;
+    z-index: 5;
+  }
+
+  #details {
+    padding: 18px;
+    position: sticky;
+    top: 78px;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+
+  #details h3 {
+    margin: 0 0 10px 0;
+    font-size: 13px;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+
+  #details .field {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+
+  #details .field .k { color: var(--text-dim); }
+  #details .field .v { font-family: var(--mono); text-align: right; }
+
+  #details .empty {
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  #details .hint {
+    margin-top: 14px;
+    color: var(--text-dim);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div class="toolbar panel">
+  <label for="session-select">Session</label>
+  <select id="session-select"></select>
+
+  <label for="filter-protocol">Highlight protocol</label>
+  <select id="filter-protocol">
+    <option value="">any</option>
+    <option>DNS</option>
+    <option>HTTP</option>
+    <option>HTTPS</option>
+    <option>TCP</option>
+    <option>UDP</option>
+    <option>ICMP</option>
+    <option>ARP</option>
+    <option>OTHER</option>
+  </select>
+
+  <div class="spacer"></div>
+
+  <div class="toolbar-info">
+    <span class="live-status" id="live-status" data-state="off" role="status" aria-live="polite">
+      <span class="dot"></span><span id="live-status-text"></span>
+    </span>
+
+    <div class="legend">
+      <span><span class="swatch" style="background:#5aa7ff"></span>DNS</span>
+      <span><span class="swatch" style="background:#6fdb8c"></span>HTTP</span>
+      <span><span class="swatch" style="background:#b69bfb"></span>HTTPS/TLS</span>
+      <span><span class="swatch" style="background:#e0b96f"></span>other TCP/UDP</span>
+      <span><span class="swatch" style="background:#e0654a"></span>anomaly</span>
+      <span><span class="swatch" style="background:#3ddbc4"></span>this machine</span>
+    </div>
+  </div>
+</div>
+
+<div class="layout">
+  <div class="panel" id="scene-panel">
+    <canvas id="scene-canvas"></canvas>
+    <div id="hover-tooltip"></div>
+    <div id="scene-empty">No session selected. Import or pick a .pcap from the Packet Table tab first.</div>
+  </div>
+
+  <div class="panel" id="details">
+    <h3>Selection</h3>
+    <div class="empty">Click a host (sphere) or a conversation (line) to inspect it.</div>
+    <div class="hint">
+      Drag to orbit, scroll to zoom. Node size ~ traffic volume.
+      Particles show relative packet volume per conversation, not
+      real-time replay (that arrives with live capture).
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_script %}
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const API = "/api";
+const MAX_PARTICLES = 240;
+
+// Protocol -> color, per spec section 8.
+const PROTOCOL_COLORS = {
+  DNS: 0x5aa7ff,
+  HTTP: 0x6fdb8c,
+  HTTPS: 0xb69bfb,
+  TCP: 0xe0b96f,
+  UDP: 0xe0b96f,
+  ICMP: 0x9a9a9a,
+  ARP: 0x9a9a9a,
+  OTHER: 0x9a9a9a,
+};
+const LOCAL_COLOR = 0x3ddbc4;
+const HOST_COLOR = 0x5f7a86;
+const ANOMALY_COLOR = 0xe0654a;
+
+function protocolColor(protocol, encrypted) {
+  if (protocol === "TCP" && encrypted) return PROTOCOL_COLORS.HTTPS;
+  return PROTOCOL_COLORS[protocol] ?? PROTOCOL_COLORS.OTHER;
+}
+function displayProtocol(protocol, encrypted) {
+  if (protocol === "TCP" && encrypted) return "HTTPS";
+  return protocol;
+}
+
+const sessionSelect = document.getElementById("session-select");
+const protocolFilter = document.getElementById("filter-protocol");
+const canvas = document.getElementById("scene-canvas");
+const panel = document.getElementById("scene-panel");
+const emptyEl = document.getElementById("scene-empty");
+const tooltipEl = document.getElementById("hover-tooltip");
+const detailsEl = document.getElementById("details");
+
+// --- Three.js setup ------------------------------------------------
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 2000);
+camera.position.set(0, 60, 220);
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+const keyLight = new THREE.DirectionalLight(0xffffff, 0.7);
+keyLight.position.set(80, 120, 60);
+scene.add(keyLight);
+
+const nodeGroup = new THREE.Group();
+const linkGroup = new THREE.Group();
+scene.add(linkGroup, nodeGroup);
+
+// Particle pool: one InstancedMesh reused across every link.
+const particleGeo = new THREE.SphereGeometry(1.1, 8, 8);
+const particleMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true });
+const particleMesh = new THREE.InstancedMesh(particleGeo, particleMat, MAX_PARTICLES);
+particleMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3);
+scene.add(particleMesh);
+const _dummy = new THREE.Object3D();
+const _hiddenMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+for (let i = 0; i < MAX_PARTICLES; i++) particleMesh.setMatrixAt(i, _hiddenMatrix);
+
+let particles = []; // {link, t, speed, active} -- holds the link object itself: with live updates
+                    // links come and go, so an array index would silently point at the wrong link
+for (let i = 0; i < MAX_PARTICLES; i++) particles.push({ link: null, t: 0, speed: 0, active: false });
+
+// --- Graph state -----------------------------------------------------
+let nodes = [];   // {id, ip, mesh, x,y,z, vx,vy,vz, isLocal, byteCount, packetCount, firstSeen, lastSeen, removed}
+let links = [];   // {key, src, dst, mesh, thickness, protocol, encrypted, packetCount, byteCount, spawnAccumulator, spawnInterval, removed}
+const nodesByIp = new Map();
+const linksByKey = new Map();
+let selected = null; // {type: 'host'|'conversation', node|link}
+
+// Sphere / cylinder geometry is shared and sized per-object via mesh.scale,
+// so a host's size can change on a live update without rebuilding its mesh.
+const hostGeo = new THREE.SphereGeometry(1, 20, 20);
+const linkGeo = new THREE.CylinderGeometry(1, 1, 1, 6, 1);
+let raycaster = new THREE.Raycaster();
+let mouse = new THREE.Vector2();
+
+function clearGraph() {
+  for (const n of nodes) { nodeGroup.remove(n.mesh); n.mesh.material.dispose(); n.removed = true; }
+  for (const l of links) { linkGroup.remove(l.mesh); l.mesh.material.dispose(); l.removed = true; }
+  nodes = [];
+  links = [];
+  nodesByIp.clear();
+  linksByKey.clear();
+  for (const p of particles) p.active = false;
+  selected = null;
+  renderDetailsEmpty();
+}
+
+function resize() {
+  const rect = panel.getBoundingClientRect();
+  renderer.setSize(rect.width, rect.height, false);
+  camera.aspect = rect.width / Math.max(rect.height, 1);
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+
+// --- Building / updating the graph from hosts + conversations ---------
+// One code path for both the first REST load and every live WebSocket
+// message: applySnapshot() merges the incoming lists into what's already
+// on screen. Existing hosts keep their position (so the force layout
+// doesn't restart every half second), new ones spawn on the outer shell,
+// and ones that dropped out of the rolling window are removed.
+
+function nodeSize(h, maxBytes) {
+  // log scale so one heavy talker doesn't dwarf everything else
+  return h.is_local ? 6 : 2.2 + 5 * (Math.log(1 + h.byte_count) / Math.log(1 + maxBytes));
+}
+
+function createNode(h, angle) {
+  // Local machine anchored near the center; everyone else starts on
+  // a shell around it and the force sim spreads them out.
+  const isLocal = h.is_local;
+  const radius = isLocal ? 0 : 70 + Math.random() * 20;
+  const x = isLocal ? 0 : Math.cos(angle) * radius;
+  const z = isLocal ? 0 : Math.sin(angle) * radius;
+  const y = isLocal ? 0 : (Math.random() - 0.5) * 40;
+
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.1 });
+  const mesh = new THREE.Mesh(hostGeo, mat);
+  mesh.position.set(x, y, z);
+  nodeGroup.add(mesh);
+
+  const node = { id: h.id, ip: h.ip_address, mesh, x, y, z, vx: 0, vy: 0, vz: 0, removed: false };
+  mesh.userData.wsRef = { type: "host", node };
+  nodes.push(node);
+  nodesByIp.set(h.ip_address, node);
+  return node;
+}
+
+function updateNode(node, h, maxBytes) {
+  node.isLocal = h.is_local;
+  node.byteCount = h.byte_count;
+  node.packetCount = h.packet_count;
+  node.firstSeen = h.first_seen;
+  node.lastSeen = h.last_seen;
+
+  const mat = node.mesh.material;
+  mat.color.setHex(node.isLocal ? LOCAL_COLOR : HOST_COLOR);
+  mat.emissive.setHex(node.isLocal ? LOCAL_COLOR : 0x000000);
+  mat.emissiveIntensity = node.isLocal ? 0.35 : 0;
+  node.mesh.scale.setScalar(nodeSize(h, maxBytes));
+}
+
+function removeNode(node) {
+  node.removed = true;
+  nodeGroup.remove(node.mesh);
+  node.mesh.material.dispose();
+  nodesByIp.delete(node.ip);
+  nodes = nodes.filter(n => n !== node);
+}
+
+function conversationKey(c) {
+  return `${c.src_ip}|${c.dst_ip}|${c.protocol}`;
+}
+
+function createLink(key, a, b, c) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 });
+  const mesh = new THREE.Mesh(linkGeo, mat);
+  linkGroup.add(mesh);
+
+  const link = {
+    key, src: a, dst: b, mesh, thickness: 0.25, removed: false,
+    spawnAccumulator: Math.random(), spawnInterval: 1.4,
+  };
+  mesh.userData.wsRef = { type: "conversation", link };
+  links.push(link);
+  linksByKey.set(key, link);
+  return link;
+}
+
+function updateLink(link, c, maxConvBytes) {
+  link.protocol = c.protocol;
+  link.encrypted = c.encrypted;
+  link.packetCount = c.packet_count;
+  link.byteCount = c.byte_count;
+  link.firstSeen = c.first_seen;
+  link.lastSeen = c.last_seen;
+
+  link.mesh.material.color.setHex(protocolColor(c.protocol, c.encrypted));
+  link.thickness = 0.25 + 0.9 * (c.byte_count / maxConvBytes);
+  // heavier conversations spawn particles more often
+  link.spawnInterval = Math.max(0.15, 1.4 - (c.byte_count / maxConvBytes) * 1.2);
+}
+
+function removeLink(link) {
+  link.removed = true;
+  linkGroup.remove(link.mesh);
+  link.mesh.material.dispose();
+  linksByKey.delete(link.key);
+  links = links.filter(l => l !== link);
+}
+
+function applySnapshot(hosts, conversations) {
+  const firstFill = nodes.length === 0;
+  const maxBytes = Math.max(...hosts.map(h => h.byte_count), 1);
+  const seenIps = new Set();
+
+  hosts.forEach((h, i) => {
+    seenIps.add(h.ip_address);
+    let node = nodesByIp.get(h.ip_address);
+    if (!node) {
+      // Spread the initial batch evenly round the shell; later arrivals
+      // just pick a random spot.
+      const angle = firstFill ? (i / hosts.length) * Math.PI * 2 : Math.random() * Math.PI * 2;
+      node = createNode(h, angle);
+    }
+    updateNode(node, h, maxBytes);
+  });
+  for (const node of [...nodes]) if (!seenIps.has(node.ip)) removeNode(node);
+
+  const maxConvBytes = Math.max(...conversations.map(c => c.byte_count), 1);
+  const seenKeys = new Set();
+
+  for (const c of conversations) {
+    const a = nodesByIp.get(c.src_ip);
+    const b = nodesByIp.get(c.dst_ip);
+    if (!a || !b) continue; // references a host outside this snapshot (shouldn't happen)
+    const key = conversationKey(c);
+    seenKeys.add(key);
+    let link = linksByKey.get(key);
+    if (!link) link = createLink(key, a, b, c);
+    updateLink(link, c, maxConvBytes);
+  }
+  for (const link of [...links]) if (!seenKeys.has(link.key)) removeLink(link);
+
+  applyProtocolFilter();
+  refreshSelection();
+  updateEmptyState();
+}
+
+let sessionsById = new Map();
+let loadToken = 0;
+
+async function loadGraph(sessionId) {
+  const token = ++loadToken;
+  stopLive();
+  clearGraph();
+  if (!sessionId) {
+    updateEmptyState();
+    return;
+  }
+
+  const [hostsRes, convRes] = await Promise.all([
+    fetch(`${API}/sessions/${sessionId}/hosts/`),
+    fetch(`${API}/sessions/${sessionId}/conversations/`),
+  ]);
+  const hosts = await hostsRes.json();
+  const conversations = await convRes.json();
+  if (token !== loadToken) return; // user switched sessions while this was loading
+
+  applySnapshot(hosts, conversations);
+
+  const meta = sessionsById.get(String(sessionId));
+  if (meta && meta.source === "live") {
+    if (meta.is_active) startLive(sessionId);
+    else setLiveStatus("ended");
+  }
+}
+
+function updateEmptyState() {
+  if (nodes.length > 0) {
+    emptyEl.style.display = "none";
+    return;
+  }
+  const meta = sessionsById.get(String(sessionSelect.value));
+  if (!sessionSelect.value || !meta) {
+    emptyEl.textContent = "No session selected. Import or pick a .pcap from the Packet Table tab first.";
+  } else if (meta.source === "live" && liveState !== "ended") {
+    emptyEl.textContent = "Waiting for traffic in the rolling window\u2026";
+  } else {
+    emptyEl.textContent = "This session has no hosts yet.";
+  }
+  emptyEl.style.display = "flex";
+}
+
+function placeLinkMesh(link) {
+  const { src, dst, mesh } = link;
+  const dx = dst.x - src.x, dy = dst.y - src.y, dz = dst.z - src.z;
+  const length = Math.max(Math.hypot(dx, dy, dz), 0.001);
+  mesh.position.set((src.x + dst.x) / 2, (src.y + dst.y) / 2, (src.z + dst.z) / 2);
+  mesh.scale.set(link.thickness, length, link.thickness);
+  mesh.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(dx, dy, dz).normalize()
+  );
+}
+
+// --- A small custom force layout (repel + spring + centering) --------
+function stepLayout(dt) {
+  const REPEL = 900;
+  const SPRING = 0.02;
+  const REST_LENGTH = 55;
+  const CENTER_PULL = 0.004;
+  const DAMPING = 0.85;
+
+  for (const n of nodes) {
+    if (n.isLocal) continue; // pinned at the origin
+    let fx = 0, fy = 0, fz = 0;
+
+    for (const other of nodes) {
+      if (other === n) continue;
+      const dx = n.x - other.x, dy = n.y - other.y, dz = n.z - other.z;
+      const distSq = Math.max(dx * dx + dy * dy + dz * dz, 4);
+      const f = REPEL / distSq;
+      const dist = Math.sqrt(distSq);
+      fx += (dx / dist) * f;
+      fy += (dy / dist) * f;
+      fz += (dz / dist) * f;
+    }
+
+    fx -= n.x * CENTER_PULL;
+    fy -= n.y * CENTER_PULL;
+    fz -= n.z * CENTER_PULL;
+
+    n.vx = (n.vx + fx * dt) * DAMPING;
+    n.vy = (n.vy + fy * dt) * DAMPING;
+    n.vz = (n.vz + fz * dt) * DAMPING;
+  }
+
+  for (const link of links) {
+    const dx = link.dst.x - link.src.x, dy = link.dst.y - link.src.y, dz = link.dst.z - link.src.z;
+    const dist = Math.max(Math.hypot(dx, dy, dz), 0.001);
+    const stretch = dist - REST_LENGTH;
+    const fx = (dx / dist) * stretch * SPRING, fy = (dy / dist) * stretch * SPRING, fz = (dz / dist) * stretch * SPRING;
+    if (!link.src.isLocal) { link.src.vx += fx * dt; link.src.vy += fy * dt; link.src.vz += fz * dt; }
+    if (!link.dst.isLocal) { link.dst.vx -= fx * dt; link.dst.vy -= fy * dt; link.dst.vz -= fz * dt; }
+  }
+
+  for (const n of nodes) {
+    if (n.isLocal) continue;
+    n.x += n.vx * dt;
+    n.y += n.vy * dt;
+    n.z += n.vz * dt;
+    n.mesh.position.set(n.x, n.y, n.z);
+  }
+
+  for (const link of links) placeLinkMesh(link);
+}
+
+// --- Particles: recycled pool, spawn rate weighted by traffic --------
+function stepParticles(dt) {
+  for (const link of links) {
+    if (link.mesh.material.opacity < 0.2) continue; // dimmed by the filter, skip spawning
+    link.spawnAccumulator += dt;
+    if (link.spawnAccumulator >= link.spawnInterval) {
+      link.spawnAccumulator = 0;
+      const slot = particles.find(p => !p.active);
+      if (slot) {
+        slot.active = true;
+        slot.link = link;
+        slot.t = 0;
+        slot.speed = 0.35 + Math.random() * 0.25;
+      }
+    }
+  }
+
+  const color = new THREE.Color();
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    if (!p.active) {
+      particleMesh.setMatrixAt(i, _hiddenMatrix);
+      continue;
+    }
+    p.t += p.speed * dt;
+    if (p.t >= 1) { p.active = false; particleMesh.setMatrixAt(i, _hiddenMatrix); continue; }
+
+    const link = p.link;
+    if (!link || link.removed) { p.active = false; particleMesh.setMatrixAt(i, _hiddenMatrix); continue; }
+
+    _dummy.position.set(
+      link.src.x + (link.dst.x - link.src.x) * p.t,
+      link.src.y + (link.dst.y - link.src.y) * p.t,
+      link.src.z + (link.dst.z - link.src.z) * p.t,
+    );
+    _dummy.scale.set(1, 1, 1);
+    _dummy.updateMatrix();
+    particleMesh.setMatrixAt(i, _dummy.matrix);
+    color.set(protocolColor(link.protocol, link.encrypted));
+    particleMesh.setColorAt(i, color);
+  }
+  particleMesh.instanceMatrix.needsUpdate = true;
+  if (particleMesh.instanceColor) particleMesh.instanceColor.needsUpdate = true;
+}
+
+// --- Filter: dim links/particles that don't match the chosen protocol
+function applyProtocolFilter() {
+  const chosen = protocolFilter.value;
+  for (const link of links) {
+    const label = displayProtocol(link.protocol, link.encrypted);
+    const match = !chosen || label === chosen;
+    link.mesh.material.opacity = match ? 0.55 : 0.06;
+  }
+}
+protocolFilter.addEventListener("change", applyProtocolFilter);
+
+// --- Hover + click ------------------------------------------------
+function updatePointer(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+}
+
+function pickAt(event) {
+  updatePointer(event);
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects([...nodeGroup.children, ...linkGroup.children], false);
+  return hits.length ? hits[0].object.userData.wsRef : null;
+}
+
+renderer.domElement.addEventListener("pointermove", (event) => {
+  const hit = pickAt(event);
+  if (hit) {
+    tooltipEl.style.display = "block";
+    tooltipEl.style.left = `${event.clientX - panel.getBoundingClientRect().left + 12}px`;
+    tooltipEl.style.top = `${event.clientY - panel.getBoundingClientRect().top + 12}px`;
+    if (hit.type === "host") {
+      tooltipEl.textContent = `${hit.node.ip}${hit.node.isLocal ? " (this machine)" : ""} — ${hit.node.packetCount} pkts`;
+    } else {
+      tooltipEl.textContent = `${hit.link.src.ip} \u2192 ${hit.link.dst.ip} [${displayProtocol(hit.link.protocol, hit.link.encrypted)}]`;
+    }
+  } else {
+    tooltipEl.style.display = "none";
+  }
+});
+
+renderer.domElement.addEventListener("click", (event) => {
+  const hit = pickAt(event);
+  if (!hit) return;
+  selected = hit;
+  refreshSelection();
+});
+
+// Re-render the details pane for whatever is selected (called on click and
+// after every live update, so the numbers tick), or clear it if that host /
+// conversation just fell out of the rolling window.
+function refreshSelection() {
+  if (!selected) return;
+  const target = selected.type === "host" ? selected.node : selected.link;
+  if (target.removed) {
+    selected = null;
+    renderDetailsEmpty();
+    return;
+  }
+  if (selected.type === "host") renderHostDetails(selected.node);
+  else renderConversationDetails(selected.link);
+}
+
+// Skip the DOM write when nothing changed, so a 2-per-second live update
+// doesn't reset the pane's scroll position or interrupt text selection.
+let lastDetailsHtml = "";
+function setDetails(html) {
+  if (html === lastDetailsHtml) return;
+  lastDetailsHtml = html;
+  detailsEl.innerHTML = html;
+}
+
+function renderDetailsEmpty() {
+  setDetails(`
+    <h3>Selection</h3>
+    <div class="empty">Click a host (sphere) or a conversation (line) to inspect it.</div>
+    <div class="hint">
+      Drag to orbit, scroll to zoom. Node size ~ traffic volume.
+      Particles show relative packet volume per conversation, not
+      real-time replay (that arrives with live capture).
+    </div>
+  `);
+}
+
+function renderHostDetails(n) {
+  const rows = [
+    ["IP address", n.ip],
+    ["Role", n.isLocal ? "This machine" : "Remote host"],
+    ["Packets", n.packetCount],
+    ["Bytes", n.byteCount.toLocaleString()],
+    ["First seen", new Date(n.firstSeen).toLocaleString()],
+    ["Last seen", new Date(n.lastSeen).toLocaleString()],
+  ];
+  setDetails(`<h3>Host</h3>` + rows.map(([k, v]) =>
+    `<div class="field"><span class="k">${k}</span><span class="v">${v}</span></div>`
+  ).join(""));
+}
+
+function renderConversationDetails(l) {
+  const rows = [
+    ["Source", l.src.ip],
+    ["Destination", l.dst.ip],
+    ["Protocol", displayProtocol(l.protocol, l.encrypted)],
+    ["Encrypted", l.encrypted ? "yes" : "no"],
+    ["Packets", l.packetCount],
+    ["Bytes", l.byteCount.toLocaleString()],
+    ["First seen", new Date(l.firstSeen).toLocaleString()],
+    ["Last seen", new Date(l.lastSeen).toLocaleString()],
+  ];
+  setDetails(`<h3>Conversation</h3>` + rows.map(([k, v]) =>
+    `<div class="field"><span class="k">${k}</span><span class="v">${v}</span></div>`
+  ).join(""));
+}
+
+// --- Sessions dropdown (shared pattern with the packet table page) --
+function syncSessionInUrl(id) {
+  const url = new URL(window.location);
+  url.searchParams.set("session", id);
+  window.history.replaceState({}, "", url);
+}
+
+async function loadSessions() {
+  const res = await fetch(`${API}/sessions/?ordering=-started_at`);
+  const data = await res.json();
+  const sessions = data.results || data;
+  sessionsById = new Map(sessions.map(s => [String(s.id), s]));
+  sessionSelect.innerHTML = "";
+  if (sessions.length === 0) {
+    const opt = document.createElement("option");
+    opt.textContent = "No sessions yet";
+    sessionSelect.appendChild(opt);
+    emptyEl.style.display = "flex";
+    return;
+  }
+  for (const s of sessions) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = `${s.name} (${s.packet_count} pkts, ${s.source})`;
+    sessionSelect.appendChild(opt);
+  }
+  const requested = new URL(window.location).searchParams.get("session");
+  const validRequested = requested && sessions.some(s => String(s.id) === requested);
+  sessionSelect.value = validRequested ? requested : sessions[0].id;
+  syncSessionInUrl(sessionSelect.value);
+  loadGraph(sessionSelect.value);
+}
+sessionSelect.addEventListener("change", () => {
+  syncSessionInUrl(sessionSelect.value);
+  loadGraph(sessionSelect.value);
+});
+
+// --- Live updates over WebSocket -------------------------------------
+// Opened only for a live session that is still capturing. The server sends
+// the current state immediately on connect, then again whenever it changes
+// (~every 0.5s while traffic flows), so a reconnect re-syncs by itself.
+const liveStatusEl = document.getElementById("live-status");
+const liveStatusText = document.getElementById("live-status-text");
+const LIVE_LABELS = {
+  connecting: "connecting\u2026",
+  live: "live",
+  reconnecting: "reconnecting\u2026",
+  ended: "capture ended",
+};
+
+let liveState = "off";
+let liveSocket = null;
+let liveTimer = null;
+let liveAttempt = 0;
+let liveSessionId = null;
+
+function setLiveStatus(state) {
+  liveState = state;
+  liveStatusEl.dataset.state = state;
+  liveStatusEl.classList.toggle("show", state !== "off");
+  liveStatusText.textContent = LIVE_LABELS[state] || "";
+}
+
+function stopLive() {
+  liveSessionId = null;
+  clearTimeout(liveTimer);
+  liveTimer = null;
+  if (liveSocket) {
+    const old = liveSocket;
+    liveSocket = null;
+    old.onopen = old.onmessage = old.onclose = old.onerror = null;
+    old.close();
+  }
+  setLiveStatus("off");
+}
+
+function startLive(sessionId) {
+  stopLive();
+  liveSessionId = String(sessionId);
+  liveAttempt = 0;
+  connectLive();
+}
+
+function connectLive() {
+  const id = liveSessionId;
+  if (!id) return;
+  setLiveStatus(liveAttempt === 0 ? "connecting" : "reconnecting");
+
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${scheme}://${window.location.host}/ws/scene/${id}/`);
+  liveSocket = ws;
+
+  ws.onopen = () => {
+    if (ws !== liveSocket) return;
+    liveAttempt = 0;
+    setLiveStatus("live");
+  };
+
+  ws.onmessage = (event) => {
+    if (ws !== liveSocket) return; // a socket for a session we've since left
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    if (String(msg.session_id) !== id) return;
+
+    applySnapshot(msg.hosts, msg.conversations);
+    if (msg.is_active === false) {
+      // Capture stopped; the server stops sending. Keep the last state visible.
+      setLiveStatus("ended");
+      updateEmptyState();
+    }
+  };
+
+  ws.onclose = (event) => {
+    if (ws !== liveSocket) return;
+    liveSocket = null;
+    if (liveState === "ended") return;
+    if (event.code === 4404) { setLiveStatus("off"); return; } // session no longer exists
+    // Server restarted, network blip, etc. Back off up to 5s and try again;
+    // the fresh connection's first message re-syncs the whole scene.
+    setLiveStatus("reconnecting");
+    const delay = Math.min(500 * 2 ** liveAttempt, 5000);
+    liveAttempt += 1;
+    liveTimer = setTimeout(connectLive, delay);
+  };
+
+  ws.onerror = () => { /* onclose always follows and handles the retry */ };
+}
+
+// --- Animation loop --------------------------------------------------
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  stepLayout(dt * 30); // scale so the hand-rolled forces feel right at 60fps
+  stepParticles(dt);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+resize();
+animate();
+loadSessions();
+</script>
+{% endblock %}

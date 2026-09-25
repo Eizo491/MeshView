@@ -1,0 +1,12 @@
+Django>=5.0,<6.2
+djangorestframework>=3.15
+
+# Phase 4: live capture + WebSocket push to the scene.
+scapy>=2.5          # capture library only -- never used to decode (see dissectors/)
+channels>=4
+daphne>=4           # ASGI server that actually serves the WebSocket route
+
+# Added in later phases (kept here so the full roadmap installs from
+# one file); not required yet.
+# cryptography>=42    # encrypt/decrypt demo panel (Phase 5)
+# geoip2              # optional Globe mode
